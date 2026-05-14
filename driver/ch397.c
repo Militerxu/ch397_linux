@@ -4330,57 +4330,6 @@ static int ch397_link_reset(struct ch397 *dev)
 	return 0;
 }
 
-static int ch398_suspend_10m(struct ch397 *dev)
-{
-	struct ch397_ndev_cfg *cfg = &dev->ndev_cfg;
-	u32 val = 0;
-	int ret;
-
-	if (dev->version != WCH_CHIP_VER_02)
-		return 0;
-
-	if (ch397_dev_inaccessible(dev))
-		return -ENODEV;
-
-	mutex_lock(&dev->phy_mutex);
-	val = (CH398_WOL_LINKSPD_10M << 16) | CH398_WOL_LINKSPD_ENABLE;
-	ret = ch397_write(dev, CMD_SET_WOL_LINKSPD, val, 0, NULL);
-	mutex_unlock(&dev->phy_mutex);
-	if (ret < 0)
-		return ret;
-	if (ch397_dev_inaccessible(dev))
-		return -ENODEV;
-
-	cfg->suspend_10m = true;
-
-	return 0;
-}
-
-static int ch398_resume_speed(struct ch397 *dev)
-{
-	struct ch397_ndev_cfg *cfg = &dev->ndev_cfg;
-	int ret;
-
-	if (dev->version != WCH_CHIP_VER_02 || !cfg->suspend_10m)
-		return 0;
-
-	if (ch397_dev_inaccessible(dev))
-		return -ENODEV;
-
-	mutex_lock(&dev->phy_mutex);
-	ret = dev->dev_ops->set_speed(dev, cfg->autoneg, cfg->speed,
-				      cfg->duplex, cfg->advertising);
-	mutex_unlock(&dev->phy_mutex);
-	if (ret < 0)
-		return ret;
-	if (ch397_dev_inaccessible(dev))
-		return -ENODEV;
-
-	cfg->suspend_10m = false;
-
-	return 0;
-}
-
 /* Serialize deferred link, RX mode, and TX scheduling updates in process context. */
 static void ch397_work_func(struct work_struct *work)
 {
@@ -5078,7 +5027,6 @@ out:
 static int ch397_system_resume(struct ch397 *dev)
 {
 	struct net_device *ndev = dev->ndev;
-	int speed_ret;
 	int ret = 0;
 
 	clear_bit(CH397_DEV_CHOOSE_SUSPEND, &dev->flags);
@@ -5087,18 +5035,6 @@ static int ch397_system_resume(struct ch397 *dev)
 		return -ENODEV;
 
 	ch397_set_accessible(dev);
-
-	speed_ret = ch398_resume_speed(dev);
-	if (speed_ret < 0) {
-		netif_err(
-			dev, ifup, ndev,
-			"system resume failed to restore PHY speed: %d\n",
-			speed_ret);
-		if (ch397_dev_inaccessible(dev) &&
-		    !ch397_dev_unplugged(dev))
-			usb_reset_device(dev->udev);
-		return speed_ret;
-	}
 
 	netif_device_attach(ndev);
 
@@ -5161,21 +5097,11 @@ static int ch397_runtime_suspend(struct ch397 *dev)
 static int ch397_system_suspend(struct ch397 *dev)
 {
 	struct net_device *ndev = dev->ndev;
-	int ret;
 
 	/* System suspend must resume through the system-PM path even if the
 	 * device happened to be runtime-suspended beforehand.
 	 */
 	clear_bit(CH397_DEV_CHOOSE_SUSPEND, &dev->flags);
-
-	ret = ch398_suspend_10m(dev);
-	if (ret < 0) {
-		netif_warn(
-			dev, ifdown, ndev,
-			"system suspend failed to force 10M full-duplex: %d\n",
-			ret);
-		return ret;
-	}
 
 	netif_device_detach(ndev);
 
